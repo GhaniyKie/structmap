@@ -6,180 +6,222 @@ import (
 	"strings"
 )
 
+type MappedStruct map[string]interface{}
+
 const (
-	methodResNum = 2
+	OPTION_IGNORE    = "-"
+	OPTION_OMITEMPTY = "omitempty"
+	OPTION_DIVE      = "dive"
+	OPTION_WILDCARD  = "wildcard"
+	OPTION_DOTTED    = "dotted"
+
+	method_results_total = 2
 )
 
 const (
-	OptIgnore    = "-"
-	OptOmitempty = "omitempty"
-	OptDive      = "dive"
-	OptWildcard  = "wildcard"
+	FLAG_IGNORE = 1 << iota
+	FLAG_OMITEMPTY
+	FLAG_DIVE
+	FLAG_WILDCARD
+	FLAG_DOTTED
 )
 
-const (
-	flagIgnore = 1 << iota
-	flagOmiEmpty
-	flagDive
-	flagWildcard
-)
+// StructToMap maps a struct by its tag.
+//
+// Key can be specified by tag, LIKE `json:"tag"`, or `map:"tag"`. Whatever you want.
+// Specify the tag in the second parameter. Options are:
+//   - `omitempty` to omit empty fields
+//   - `dive` to dive into the struct and map the fields
+//   - `wildcard` to add `%` to the string value
+//   - `dotted` to add a dot `.` to the key
+//
+// Notes:
+// Dive options will map the child's struct fields directly to the parent map.
+// Example:
+//
+//	type A struct {
+//		AA string `json:"aa"`
+//		B B `json:"b,dive"`
+//	}
+//	type B struct {
+//		C string `json:"c"`
+//	}
+//
+//	Result:
+//	map[aa:string c:string]
+//
+// While dive options will map the child's struct fields directly to the parent map.
+// Dotted options will add a dot `.` to the child's struct tag, followed by it's fields tag. Example:
+//
+//	type A struct {
+//		AA string `json:"aa"`
+//		B B `json:"b,dotted"`
+//	}
+//	type B struct {
+//		C string `json:"c"`
+//	}
+//
+//	Result:
+//	map[aa:string b.c:string]
+func StructToMap(data interface{}, tag string, method string) (MappedStruct, error) {
+	result := make(MappedStruct)
+	reflectedValue := reflect.ValueOf(data)
 
-// StructToMap convert a golang sturct to a map
-// key can be specified by tag, LIKE `map:"tag"`.
-// If there is no tag, struct filed name will be used instead
-// methodName is the name the field has implemented.
-// If implemented, it uses the method to get the key and value
-func StructToMap(s interface{}, tag string, methodName string) (res map[string]interface{}, err error) {
-	v := reflect.ValueOf(s)
-
-	if v.Kind() == reflect.Ptr && v.IsNil() {
-		return nil, fmt.Errorf("%s is a nil pointer", v.Kind().String())
+	if reflectedValue.Kind() == reflect.Pointer {
+		if reflectedValue.IsNil() {
+			return nil, fmt.Errorf("%s is a nil pointer", reflectedValue.Kind().String())
+		}
+		reflectedValue = reflectedValue.Elem()
 	}
-	if v.Kind() == reflect.Ptr {
-		v = v.Elem()
-	}
-	// only accept struct param
-	if v.Kind() != reflect.Struct {
-		return nil, fmt.Errorf("s is not a struct but %s", v.Kind().String())
+	if reflectedValue.Kind() != reflect.Struct {
+		return nil, fmt.Errorf("data is not a struct but %s", reflectedValue.Kind().String())
 	}
 
-	t := v.Type()
-	res = make(map[string]interface{})
-	for i := 0; i < t.NumField(); i++ {
-		fieldType := t.Field(i)
+	reflectType := reflectedValue.Type()
+	for i := 0; i < reflectType.NumField(); i++ {
+		fieldType := reflectType.Field(i)
 
 		// ignore unexported field
 		if fieldType.PkgPath != "" {
 			continue
 		}
-		// read tag
-		tagVal, flag := readTag(fieldType, tag)
 
-		if flag&flagIgnore != 0 {
+		tagVal, flag := tagsReader(fieldType, tag)
+		if flag&FLAG_IGNORE != 0 {
 			continue
 		}
 
-		fieldValue := v.Field(i)
-		if flag&flagOmiEmpty != 0 && fieldValue.IsZero() {
+		fieldValue := reflectedValue.Field(i)
+		if flag&FLAG_OMITEMPTY != 0 && fieldValue.IsZero() {
 			continue
 		}
-
-		// ignore nil pointer in field
-		if fieldValue.Kind() == reflect.Ptr && fieldValue.IsNil() {
-			continue
-		}
-		if fieldValue.Kind() == reflect.Ptr {
+		if fieldValue.Kind() == reflect.Pointer {
+			if fieldValue.IsNil() {
+				continue
+			}
 			fieldValue = fieldValue.Elem()
 		}
 
-		// get kind
-		switch fieldValue.Kind() {
-		case reflect.Slice, reflect.Array:
-			if methodName != "" {
-				_, ok := fieldValue.Type().MethodByName(methodName)
-				if ok {
-					key, value, err := callFunc(fieldValue, methodName)
-					if err != nil {
-						return nil, err
-					}
-					res[key] = value
-					continue
-				}
-			}
-			res[tagVal] = fieldValue
-		case reflect.Struct:
-			if methodName != "" {
-				_, ok := fieldValue.Type().MethodByName(methodName)
-				if ok {
-					key, value, err := callFunc(fieldValue, methodName)
-					if err != nil {
-						return nil, err
-					}
-					res[key] = value
-					continue
-				}
-			}
+		key, value, err := assignValueWithMethod(fieldValue, method)
+		if err != nil {
+			return nil, err
+		}
+		if key != "" {
+			result[key] = value
+			continue
+		}
 
-			// recursive
-			deepRes, deepErr := StructToMap(fieldValue.Interface(), tag, methodName)
+		switch fieldValue.Kind() {
+		case reflect.Slice, reflect.Array, reflect.Map, reflect.Chan:
+			result[tagVal] = fieldValue
+		case reflect.Struct:
+			deepRes, deepErr := StructToMap(fieldValue.Interface(), tag, method)
 			if deepErr != nil {
 				return nil, deepErr
 			}
-			if flag&flagDive != 0 {
+			if flag&FLAG_DIVE != 0 {
 				for k, v := range deepRes {
-					res[k] = v
+					result[k] = v
+				}
+			} else if flag&FLAG_DOTTED != 0 {
+				for k, v := range deepRes {
+					result[tagVal+"."+k] = v
 				}
 			} else {
-				res[tagVal] = deepRes
+				result[tagVal] = deepRes
 			}
-		case reflect.Map:
-			res[tagVal] = fieldValue
-		case reflect.Chan:
-			res[tagVal] = fieldValue
-		case reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int, reflect.Int64:
-			res[tagVal] = fieldValue.Int()
-		case reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint, reflect.Uint64:
-			res[tagVal] = fieldValue.Uint()
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			result[tagVal] = fieldValue.Int()
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			result[tagVal] = fieldValue.Uint()
 		case reflect.Float32, reflect.Float64:
-			res[tagVal] = fieldValue.Float()
+			result[tagVal] = fieldValue.Float()
 		case reflect.String:
-			if flag&flagWildcard != 0 {
-				res[tagVal] = "%" + fieldValue.String() + "%"
+			if flag&FLAG_WILDCARD != 0 {
+				result[tagVal] = "%" + fieldValue.String() + "%"
 			} else {
-				res[tagVal] = fieldValue.String()
+				result[tagVal] = fieldValue.String()
 			}
 		case reflect.Bool:
-			res[tagVal] = fieldValue.Bool()
+			result[tagVal] = fieldValue.Bool()
 		case reflect.Complex64, reflect.Complex128:
-			res[tagVal] = fieldValue.Complex()
+			result[tagVal] = fieldValue.Complex()
 		case reflect.Interface:
-			res[tagVal] = fieldValue.Interface()
-		default:
+			result[tagVal] = fieldValue.Interface()
 		}
 	}
-	return
+
+	return result, nil
 }
 
-// readTag read tag with format `json:"name,omitempty"` or `json:"-"`
+// tagsReader read tag with format `json:"name,omitempty"` or `json:"-"`
 // For now, only supports above format
-func readTag(f reflect.StructField, tag string) (string, int) {
-	val, ok := f.Tag.Lookup(tag)
-	fieldTag := ""
-	flag := 0
+func tagsReader(structField reflect.StructField, tag string) (string, int) {
+	var (
+		flag int    = 0
+		fTag string = ""
+	)
 
-	// no tag, skip this field
+	tagValue, ok := structField.Tag.Lookup(tag)
 	if !ok {
-		flag |= flagIgnore
-		return "", flag
+		// if tag not found, ignore the field.
+		// returns empty string and ignore flag
+		flag |= FLAG_IGNORE
+		return fTag, flag
 	}
-	opts := strings.Split(val, ",")
 
-	fieldTag = opts[0]
+	opts := strings.Split(tagValue, ",")
+	fTag = opts[0]
+
 	for i := 0; i < len(opts); i++ {
 		switch opts[i] {
-		case OptIgnore:
-			flag |= flagIgnore
-		case OptOmitempty:
-			flag |= flagOmiEmpty
-		case OptDive:
-			flag |= flagDive
-		case OptWildcard:
-			flag |= flagWildcard
+		case OPTION_IGNORE:
+			flag |= FLAG_IGNORE
+		case OPTION_OMITEMPTY:
+			flag |= FLAG_OMITEMPTY
+		case OPTION_DIVE:
+			flag |= FLAG_DIVE
+		case OPTION_WILDCARD:
+			flag |= FLAG_WILDCARD
+		case OPTION_DOTTED:
+			flag |= FLAG_DOTTED
 		}
 	}
 
-	return fieldTag, flag
+	return fTag, flag
 }
 
-// call function
-func callFunc(fv reflect.Value, methodName string) (string, interface{}, error) {
-	methodRes := fv.MethodByName(methodName).Call([]reflect.Value{})
-	if len(methodRes) != methodResNum {
-		return "", nil, fmt.Errorf("wrong method %s, should have 2 output: (string,interface{})", methodName)
+func assignValueWithMethod(reflectedValue reflect.Value, method string) (key string, value interface{}, err error) {
+	if method == "" {
+		return "", nil, nil
 	}
-	if methodRes[0].Kind() != reflect.String {
-		return "", nil, fmt.Errorf("wrong method %s, first output should be string", methodName)
+
+	_, ok := reflectedValue.Type().MethodByName(method)
+	if !ok {
+		return "", nil, nil
 	}
-	key := methodRes[0].String()
-	return key, methodRes[1], nil
+
+	key, value, err = callFunc(reflectedValue, method)
+	if err != nil {
+		return "", nil, err
+	}
+
+	return key, value, nil
+}
+
+// callFunc calls the method and returns the key and value.
+// The method should have 2 outputs: (string,interface{}).
+func callFunc(reflectedValue reflect.Value, method string) (key string, value interface{}, err error) {
+	methodResults := reflectedValue.MethodByName(method).Call([]reflect.Value{})
+	if len(methodResults) != method_results_total {
+		return "", nil, fmt.Errorf("wrong method %s, should have 2 output: (string,interface{})", method)
+	}
+	if methodResults[0].Kind() != reflect.String {
+		return "", nil, fmt.Errorf("wrong method %s, first output should be string", method)
+	}
+
+	key = methodResults[0].String()
+	value = methodResults[1].Interface()
+
+	return key, value, nil
 }

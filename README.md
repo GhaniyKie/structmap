@@ -12,11 +12,12 @@ Also, it skips unexported filed , nil pointer and field without tag.
 
 
 ## Tags
-For now, it supports 4 tags:
+For now, it supports 5 tags:
 - '-' means ignoring this field
 - 'omitempty' means ignoring this field when it is empty
 - 'dive' means recursively traversing the struct, converting every filed in struct to be a key in map
 - 'wildcard' applies for string value, it returns "%" +value +"%", which is conveniently for db wildcard query
+- 'dotted' is useful for some parsers that need dot-style keys, such as "user.address.street": "his street address"
 
 
 ## Example

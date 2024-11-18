@@ -55,6 +55,11 @@ type StructNoDive struct {
 	NoDive int `map:"no_dive"`
 }
 
+type Address struct {
+	Province string `map:"province"`
+	City     string `map:"city"`
+}
+
 // User is used for demonstration
 type User struct {
 	Name        string       `map:"name,omitempty,wildcard"` // string
@@ -66,6 +71,7 @@ type User struct {
 	Arr         []int        `map:"arr,omitempty"`           // normal slice
 	MyArr       MySlice      `map:"my_arr,omitempty"`        // slice implements its own method
 	IgnoreFiled string       `map:"-"`
+	Address     Address      `map:"address,dotted"`
 }
 
 func newUser() User {
@@ -85,6 +91,11 @@ func newUser() User {
 	}
 	arr := []int{1, 2, 3}
 	myArr := MySlice{11, 12, 13}
+	address := Address{
+		Province: "province",
+		City:     "city",
+	}
+
 	return User{
 		Name:        name,
 		Email:       &email,
@@ -95,6 +106,7 @@ func newUser() User {
 		Arr:         arr,
 		MyArr:       myArr,
 		IgnoreFiled: "ignore",
+		Address:     address,
 	}
 }
 
