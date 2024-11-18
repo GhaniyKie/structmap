@@ -1,4 +1,4 @@
-package struct_to_map_test
+package structmap_test
 
 import (
 	"encoding/json"
@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/liangyaopei/structmap"
+	"github.com/GhaniyKie/structmap"
 )
 
 const timeLayout = "2006-01-02 15:04:05"
